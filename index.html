@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Radio por comandos</title>
+<style>
+  :root {
+    --bg: #1b1426;
+    --panel: #261c35;
+    --line: #3d2f52;
+    --text: #f1e9ff;
+    --muted: #a396ba;
+    --accent: #ffc83d;
+    --ok: #7ee0b0;
+    --err: #ff8a8a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font-family: "Trebuchet MS", "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; letter-spacing: .5px; }
+  .sub { color: var(--muted); margin: 0 0 18px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  #now { font-size: 1.1rem; font-weight: 700; margin: 0 0 10px; min-height: 1.4em; }
+  #player-wrap { position: relative; width: 100%; max-width: 320px; aspect-ratio: 16/9; background: #000; border-radius: 8px; overflow: hidden; }
+  #player-wrap iframe { width: 100%; height: 100%; }
+  #start { display: block; width: 100%; padding: 14px; font-size: 1.05rem; font-weight: 700; background: var(--accent); color: #2a1d00; border: 0; border-radius: 8px; cursor: pointer; }
+  #log { height: 220px; overflow-y: auto; font-size: .95rem; line-height: 1.5; }
+  #log div { padding: 2px 0; }
+  .u { color: var(--accent); }
+  .b { color: var(--text); }
+  .e { color: var(--err); }
+  .o { color: var(--ok); }
+  form { display: flex; gap: 8px; margin-top: 10px; }
+  input[type=text], input[type=password] { flex: 1; min-width: 0; padding: 11px; font-size: 1rem; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 8px; }
+  button.send { padding: 11px 16px; font-size: 1rem; font-weight: 700; background: var(--accent); color: #2a1d00; border: 0; border-radius: 8px; cursor: pointer; }
+  input:focus-visible, button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  details summary { cursor: pointer; color: var(--muted); }
+  details ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.7; }
+  code { background: var(--bg); padding: 1px 6px; border-radius: 4px; color: var(--accent); }
+  label { display: block; color: var(--muted); font-size: .9rem; margin-bottom: 6px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Radio por comandos</h1>
+  <p class="sub">Escribe un comando y suena. Fuente: YouTube.</p>
+
+  <!-- Pon aquí tu clave de la YouTube Data API v3 si quieres que no se pida en pantalla -->
+  <section class="panel" id="keybox">
+    <label for="key">Clave de la YouTube Data API v3</label>
+    <form id="keyform">
+      <input type="password" id="key" autocomplete="off" placeholder="AIza...">
+      <button class="send" type="submit">Guardar</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <button id="start">Iniciar emisora</button>
+    <div id="radio" class="hidden">
+      <p id="now">Nada sonando</p>
+      <div id="player-wrap"><div id="yt"></div></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div id="log" aria-live="polite"></div>
+    <form id="cmdform">
+      <input type="text" id="cmd" autocomplete="off" placeholder="!play nombre de la canción">
+      <button class="send" type="submit">Enviar</button>
+    </form>
+  </section>
+
+  <section class="panel">
+    <details>
+      <summary>Comandos</summary>
+      <ul>
+        <li><code>!play canción o link</code> busca y la agrega a la cola (suena ya si no hay nada)</li>
+        <li><code>!playnow canción</code> suena de inmediato</li>
+        <li><code>!pause</code> y <code>!resume</code></li>
+        <li><code>!skip</code> o <code>!next</code> pasa a la siguiente</li>
+        <li><code>!queue</code> muestra la cola</li>
+        <li><code>!remove 2</code> quita el puesto 2 de la cola</li>
+        <li><code>!clear</code> vacía la cola</li>
+        <li><code>!volume 50</code> volumen de 0 a 100</li>
+        <li><code>!now</code> muestra lo que suena</li>
+      </ul>
+    </details>
+  </section>
+</main>
+
+<script>
+// Opcional: escribe tu clave aquí para no pedirla en pantalla.
+const API_KEY_FIXED = "";
+
+let apiKey = API_KEY_FIXED;
+try { apiKey = apiKey || localStorage.getItem("yt_key") || ""; } catch (e) {}
+
+const $ = (id) => document.getElementById(id);
+const logEl = $("log");
+let player = null;
+let ready = false;
+let started = false;
+let queue = [];
+let current = null;
+
+function log(text, cls) {
+  const d = document.createElement("div");
+  d.className = cls || "b";
+  d.textContent = text;
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+if (apiKey) $("keybox").classList.add("hidden");
+
+$("keyform").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const v = $("key").value.trim();
+  if (!v) return;
+  apiKey = v;
+  try { localStorage.setItem("yt_key", v); } catch (err) {}
+  $("keybox").classList.add("hidden");
+  log("Clave guardada.", "o");
+});
+
+// ---- Reproductor ----
+const tag = document.createElement("script");
+tag.src = "https://www.youtube.com/iframe_api";
+document.head.appendChild(tag);
+
+window.onYouTubeIframeAPIReady = function () {
+  player = new YT.Player("yt", {
+    width: "100%",
+    height: "100%",
+    playerVars: { playsinline: 1, rel: 0 },
+    events: {
+      onReady: () => { ready = true; },
+      onStateChange: (e) => { if (e.data === YT.PlayerState.ENDED) playNext(); },
+      onError: () => { log("No se pudo reproducir ese video. Paso al siguiente.", "e"); playNext(); }
+    }
+  });
+};
+
+$("start").addEventListener("click", () => {
+  started = true;
+  $("start").classList.add("hidden");
+  $("radio").classList.remove("hidden");
+  log("Emisora iniciada. Escribe !help o usa los comandos de abajo.", "o");
+  if (!apiKey) log("Falta la clave de la API para buscar.", "e");
+  if (!current && queue.length) playNext();
+});
+
+function setNow(t) { $("now").textContent = t ? "Sonando: " + t : "Nada sonando"; }
+
+function playItem(item) {
+  current = item;
+  setNow(item.title);
+  if (ready) player.loadVideoById(item.id);
+}
+
+function playNext() {
+  if (queue.length) {
+    playItem(queue.shift());
+  } else {
+    current = null;
+    setNow("");
+  }
+}
+
+// ---- Búsqueda ----
+function extractId(q) {
+  const m = q.match(/(?:youtu\.be\/|v=|\/embed\/|\/shorts\/)([\w-]{11})/);
+  return m ? m[1] : null;
+}
+
+function decode(s) {
+  const t = document.createElement("textarea");
+  t.innerHTML = s;
+  return t.value;
+}
+
+async function resolve(q) {
+  if (!apiKey) throw new Error("Falta la clave de la API de YouTube.");
+  const id = extractId(q);
+  let url;
+  if (id) {
+    url = "https://www.googleapis.com/youtube/v3/videos?part=snippet&id=" + id + "&key=" + encodeURIComponent(apiKey);
+  } else {
+    url = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&maxResults=1&q=" +
+      encodeURIComponent(q) + "&key=" + encodeURIComponent(apiKey);
+  }
+  const r = await fetch(url);
+  const data = await r.json();
+  if (data.error) throw new Error("YouTube respondió: " + data.error.message);
+  const it = data.items && data.items[0];
+  if (!it) throw new Error("No encontré resultados para: " + q);
+  return { id: id || it.id.videoId, title: decode(it.snippet.title) };
+}
+
+// ---- Comandos ----
+async function run(line) {
+  const m = line.trim().match(/^!(\w+)\s*(.*)$/);
+  if (!m) { log("Los comandos empiezan con !. Escribe !help.", "e"); return; }
+  const cmd = m[1].toLowerCase();
+  const arg = m[2].trim();
+
+  if (!started && cmd !== "help") { log("Primero toca Iniciar emisora.", "e"); return; }
+
+  try {
+    switch (cmd) {
+      case "play":
+      case "add": {
+        if (!arg) { if (player && ready) player.playVideo(); return; }
+        log("Buscando...", "b");
+        const item = await resolve(arg);
+        if (!current) { playItem(item); log("Suena: " + item.title, "o"); }
+        else { queue.push(item); log("Agregada (#" + queue.length + "): " + item.title, "o"); }
+        break;
+      }
+      case "playnow": {
+        if (!arg) { log("Uso: !playnow canción", "e"); return; }
+        log("Buscando...", "b");
+        const item = await resolve(arg);
+        playItem(item);
+        log("Suena: " + item.title, "o");
+        break;
+      }
+      case "pause": if (ready) player.pauseVideo(); log("Pausado.", "o"); break;
+      case "resume": if (ready) player.playVideo(); log("Reanudado.", "o"); break;
+      case "skip":
+      case "next":
+        if (!current && !queue.length) { log("No hay nada que saltar.", "e"); return; }
+        playNext();
+        log(current ? "Siguiente: " + current.title : "La cola terminó.", "o");
+        break;
+      case "queue":
+      case "q":
+        if (!queue.length) { log("La cola está vacía.", "b"); return; }
+        queue.forEach((it, i) => log((i + 1) + ". " + it.title, "b"));
+        break;
+      case "remove": {
+        const n = parseInt(arg, 10);
+        if (!n || n < 1 || n > queue.length) { log("Uso: !remove número de la cola", "e"); return; }
+        const [gone] = queue.splice(n - 1, 1);
+        log("Quitada: " + gone.title, "o");
+        break;
+      }
+      case "clear": queue = []; log("Cola vaciada.", "o"); break;
+      case "volume":
+      case "vol": {
+        const v = parseInt(arg, 10);
+        if (isNaN(v) || v < 0 || v > 100) { log("Uso: !volume 0-100", "e"); return; }
+        if (ready) player.setVolume(v);
+        log("Volumen: " + v, "o");
+        break;
+      }
+      case "now": log(current ? "Suena: " + current.title : "Nada sonando.", "b"); break;
+      case "help":
+        log("!play, !playnow, !pause, !resume, !skip, !queue, !remove, !clear, !volume, !now", "b");
+        break;
+      default: log("Comando desconocido: !" + cmd, "e");
+    }
+  } catch (err) {
+    log(err.message, "e");
+  }
+}
+
+$("cmdform").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const v = $("cmd").value;
+  if (!v.trim()) return;
+  log("> " + v, "u");
+  $("cmd").value = "";
+  run(v);
+});
+</script>
+</body>
+</html>
